@@ -20,3 +20,6 @@ jobs:
 
       - name: Ejecutar pruebas
         run: npm test
+
+      - name: Ejecutar cobertura
+        run: npm run test:coverage
