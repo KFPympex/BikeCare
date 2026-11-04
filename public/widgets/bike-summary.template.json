@@ -1,0 +1,53 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.5",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "🚲 ${title}",
+      "weight": "Bolder",
+      "size": "Medium",
+      "wrap": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "${subtitle}",
+      "isSubtle": true,
+      "spacing": "None",
+      "wrap": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "🧾 ${lastService}",
+      "wrap": true,
+      "spacing": "Medium"
+    },
+    {
+      "type": "TextBlock",
+      "text": "✅ Antes de salir: ${chkDone}/${chkTotal}",
+      "wrap": true,
+      "spacing": "Small"
+    },
+    {
+      "type": "TextBlock",
+      "text": "💡 ${tipName}: ${tip}",
+      "wrap": true,
+      "isSubtle": true,
+      "spacing": "Medium",
+      "maxLines": 3
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "Checklist",
+      "verb": "open-check"
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Preguntar a BikeAI",
+      "verb": "open-ai"
+    }
+  ]
+}
