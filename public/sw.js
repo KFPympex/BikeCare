@@ -29,7 +29,7 @@ function ago(dateStr) {
   const n = Math.floor((Date.now() - d.getTime()) / 864e5);
   return n <= 0 ? 'hoy' : n === 1 ? 'ayer' : `hace ${n} días`;
 }
-const cut = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s; };
+const cut = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
 // Convierte el resumen guardado por la página en los datos de la plantilla.
 async function buildData(defaults) {
