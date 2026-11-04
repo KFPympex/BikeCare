@@ -100,3 +100,7 @@ self.addEventListener('widgetclick', e => {
 
 // La página avisa cuando cambian los datos locales.
 self.addEventListener('message', e => { if (e.data && e.data.type === 'widget-sync') e.waitUntil(refreshAllWidgets()); });
+
+
+// Solo para las pruebas (en el navegador `module` no existe, así que esta línea no hace nada).
+if (typeof module !== 'undefined' && module.exports) module.exports = { ago, cut };

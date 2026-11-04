@@ -47,7 +47,7 @@ async function chat(req, res) {
   });
 }
 
-http.createServer((req, res) => {
+const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url === '/api/chat' && req.method === 'POST') return chat(req, res);
   if (url === '/api/health') return send(res, 200, { ok: true, ai: !!process.env.GROQ_API_KEY, model: MODEL() });
@@ -55,4 +55,8 @@ http.createServer((req, res) => {
   if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(PUB, 'index.html');
   res.writeHead(200, { 'Content-Type': MIME[path.extname(f)] || 'application/octet-stream' });
   fs.createReadStream(f).pipe(res);
-}).listen(PORT, () => console.log(`BikeCare en http://localhost:${PORT}  (modelo: ${MODEL()})`));
+});
+
+// Solo escucha si se ejecuta con `node server.js`; al importarlo desde las pruebas no abre el puerto.
+if (require.main === module) server.listen(PORT, () => console.log(`BikeCare en http://localhost:${PORT}  (modelo: ${MODEL()})`));
+module.exports = { server };
