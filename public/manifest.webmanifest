@@ -1,19 +1,25 @@
 {
+  "id": "/",
   "name": "BikeCaree",
   "short_name": "BikeCaree",
   "description": "Aprende mantenimiento de bicicletas con BikeAI",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "orientation": "any",
+  "dir": "ltr",
+  "lang": "es",
   "background_color": "#0b0f0c",
   "theme_color": "#0b0f0c",
-  "lang": "es",
+  "categories": ["education", "sports", "lifestyle"],
+  "prefer_related_applications": false,
+  "launch_handler": { "client_mode": "focus-existing" },
   "icons": [
     {
       "src": "icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
       "src": "icon-192.png",
@@ -28,7 +34,59 @@
       "purpose": "any"
     }
   ],
-  "id": "/",
+  "screenshots": [
+    {
+      "src": "screenshots/inicio-wide.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Pantalla de inicio de BikeCaree"
+    },
+    {
+      "src": "screenshots/bikeai-wide.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Chat con el asistente BikeAI"
+    },
+    {
+      "src": "screenshots/inicio-narrow.png",
+      "sizes": "720x1280",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Inicio en el celular"
+    },
+    {
+      "src": "screenshots/bikeai-narrow.png",
+      "sizes": "720x1280",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "BikeAI en el celular"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "BikeAI",
+      "short_name": "BikeAI",
+      "description": "Pregunta al asistente de mantenimiento",
+      "url": "/#/ai",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Diagnóstico",
+      "short_name": "Diagnóstico",
+      "description": "¿Qué le pasa a mi bicicleta?",
+      "url": "/#/diag",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Checklist",
+      "short_name": "Checklist",
+      "description": "Revisión antes de salir",
+      "url": "/#/check",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    }
+  ],
   "widgets": [
     {
       "name": "Mi bici",
