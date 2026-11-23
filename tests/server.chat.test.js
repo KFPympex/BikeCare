@@ -56,7 +56,7 @@ describe('POST /api/chat – petición enviada a Groq', () => {
     expect(url).toBe('https://api.groq.com/openai/v1/chat/completions');
     expect(opts.headers.Authorization).toBe('Bearer test-key');
     const body = sentToGroq();
-    expect(body.model).toBe('llama-3.3-70b-versatile');
+    expect(body.model).toBe('openai/gpt-oss-120b');
     expect(body.messages[0].role).toBe('system');
     expect(body.messages[0].content).toMatch(/BikeAI/);
     expect(body.messages[1]).toEqual({ role: 'user', content: '¿Cómo lubrico la cadena?' });
@@ -151,7 +151,7 @@ describe('GET /api/health – send() y MODEL()', () => {
     const r = await realFetch(base + '/api/health');
     expect(r.status).toBe(200);
     expect(r.headers.get('content-type')).toBe('application/json');
-    expect(await r.json()).toEqual({ ok: true, ai: true, model: 'llama-3.3-70b-versatile' });
+    expect(await r.json()).toEqual({ ok: true, ai: true, model: 'openai/gpt-oss-120b' });
   });
 
   test('refleja GROQ_MODEL y la ausencia de API key', async () => {

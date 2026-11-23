@@ -62,21 +62,88 @@ function hist(){const sorted=[...S.hist].sort((a,b)=>b.date.localeCompare(a.date
  document.querySelectorAll('[data-d]').forEach(b=>b.onclick=()=>{S.hist=S.hist.filter(h=>h.id!=b.dataset.d);save('hist',S.hist);hist()})}
 
 let deferred;addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferred=e;$('#inst')&&($('#inst').hidden=false)});
-async function config(){app.innerHTML=`<h1>⚙️ Ajustes</h1><div class="card"><b>Servidor BikeAI</b><div id="st">Comprobando…</div></div><div class="card"><button id="inst" ${deferred?'':'hidden'}>📲 Instalar BikeCare</button><p style="color:var(--mut);font-size:.9rem">El modelo de IA se cambia en el servidor con la variable GROQ_MODEL.</p><button class="sec" id="wipe">Borrar mis datos locales</button></div>`;
+async function config(){app.innerHTML=`<h1>⚙️ Ajustes</h1><div class="card"><b>Servidor BikeAI</b><div id="st">Comprobando…</div></div><div class="card"><button id="inst" ${deferred?'':'hidden'}>📲 Instalar BikeCare</button><p style="color:var(--mut);font-size:.9rem">El modelo de IA se cambia en el servidor con la variable GROQ_MODEL.</p><button class="sec" id="wipe">Borrar mis datos locales</button></div>${notifHtml()}`;notifBind();
  $('#inst').onclick=async()=>{deferred.prompt();deferred=null;$('#inst').hidden=true};
  $('#wipe').onclick=()=>{if(confirm('¿Borrar bicicleta, historial y checklist?')){['bike','hist','chk'].forEach(k=>localStorage.removeItem(k));S.bike={};S.hist=[];S.chk={};syncWidget();config()}};
  try{const d=await(await fetch('/api/health')).json();$('#st').innerHTML=d.ai?`✅ Conectado · modelo <code>${esc(d.model)}</code>`:'⚠️ Falta GROQ_API_KEY en el servidor'}catch{$('#st').textContent='Sin conexión con el servidor'}}
 
 addEventListener('hashchange',route);route();
-if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js'));
+if('serviceWorker' in navigator){
+ // Un solo registro: se reutiliza el existente y solo se registra si no hay ninguno.
+ addEventListener('load',async()=>{try{(await navigator.serviceWorker.getRegistration('/'))||await navigator.serviceWorker.register('/sw.js')}catch{}});
+ // Al pulsar una notificación el SW pide abrir una sección (solo rutas conocidas).
+ navigator.serviceWorker.addEventListener('message',e=>{const h=e.data&&e.data.type==='navigate'&&e.data.hash;if(typeof h==='string'&&/^#\/(check|hist|config|ai|diag|maint|bike|tools)?$/.test(h))location.hash=h})}
+
+// ---- Web Push: suscripción real (PushManager + VAPID). El servidor guarda la suscripción y puede enviar avisos ----
+const pushOk=()=>'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window;
+const b64ToBytes=b=>Uint8Array.from(atob(b.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(b.length/4)*4,'=')),c=>c.charCodeAt(0));
+const pushId=()=>{try{return localStorage.getItem('pushId')}catch{return null}};
+const setPushId=v=>{try{v?localStorage.setItem('pushId',v):localStorage.removeItem('pushId')}catch{}};
+async function pushPost(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'Error del servidor ('+r.status+')');return d}
+async function pushEnable(){ // debe llamarse desde un clic: aquí se pide el permiso
+ if(Notification.permission==='default')await Notification.requestPermission();
+ if(Notification.permission!=='granted')throw new Error('Permiso de notificaciones no concedido.');
+ const k=await(await fetch('/api/push/key')).json();if(!k.enabled)throw new Error('El servidor no tiene Web Push configurado (claves VAPID).');
+ const key=b64ToBytes(k.publicKey),reg=await navigator.serviceWorker.ready;let sub=await reg.pushManager.getSubscription();
+ if(sub){const cur=new Uint8Array(sub.options.applicationServerKey||[]);if(cur.length!==key.length||cur.some((v,i)=>v!==key[i])){await sub.unsubscribe();sub=null}} // clave VAPID cambiada
+ sub=sub||await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
+ setPushId((await pushPost('/api/push/subscribe',{subscription:sub.toJSON()})).id)}
+async function pushDisable(){
+ const reg=await navigator.serviceWorker.ready,sub=await reg.pushManager.getSubscription();let err=null;
+ if(sub){try{await pushPost('/api/push/unsubscribe',{id:pushId(),endpoint:sub.endpoint,auth:sub.toJSON().keys.auth})}catch(e){err=e}await sub.unsubscribe()}
+ setPushId(null);if(err)throw new Error('Desactivadas en este navegador, pero el servidor no confirmó la baja: '+err.message)}
+async function pushSync(){try{ // mantiene navegador y servidor alineados (renovaciones, datos borrados)
+ if(!pushOk())return;
+ const sub=Notification.permission==='granted'?await(await navigator.serviceWorker.ready).pushManager.getSubscription():null;
+ if(sub)setPushId((await pushPost('/api/push/subscribe',{subscription:sub.toJSON()})).id);else setPushId(null)
+}catch{}}
+async function pushPaint(){const st=$('#pst'),bt=$('#pbt');if(!st)return;
+ if(!pushOk()){st.textContent='Este navegador no admite notificaciones push.';return}
+ if(Notification.permission==='denied'){st.textContent='🚫 Permiso bloqueado: habilítalo en la configuración del sitio del navegador.';return}
+ let sub=null,srv=true;try{sub=await(await navigator.serviceWorker.ready).pushManager.getSubscription();srv=(await(await fetch('/api/push/key')).json()).enabled}catch{}
+ if(!$('#pst'))return;
+ st.textContent=!srv?'⚠️ El servidor no tiene Web Push configurado.':sub?'✅ Suscrito: este dispositivo recibirá avisos del servidor aunque la app esté cerrada (según navegador y sistema).':'Sin suscripción.';
+ bt.innerHTML=sub?'<button class="sec" id="poff">Desactivar push</button>':srv?'<button id="pon">Activar push</button>':'';
+ const run=f=>async()=>{bt.querySelectorAll('button').forEach(b=>b.disabled=true);try{await f()}catch(e){const m=$('#nmsg');m&&(m.textContent=e.message)}pushPaint()};
+ $('#pon')&&($('#pon').onclick=run(pushEnable));$('#poff')&&($('#poff').onclick=run(pushDisable))}
+
+// ---- Distintivo (App Badging API) y notificaciones: pendientes = ítems del checklist sin marcar ----
+function PREFS(){return {badge:false,reminders:false,...LS('prefs',{})}}
+function pendingCount(){return CHK.pre.filter((_,i)=>!S.chk['pre'+i]).length+CHK.per.filter((_,i)=>!S.chk['per'+i]).length}
+async function updateBadge(){try{
+ if(!('setAppBadge' in navigator))return;
+ const n=pendingCount();
+ if(PREFS().badge&&n>0)await navigator.setAppBadge(n);else await navigator.clearAppBadge()
+}catch(e){console.warn('[badge]',e)}}
+async function setReminders(on){ // recordatorio en segundo plano: solo con Periodic Background Sync (PWA instalada)
+ const reg=await navigator.serviceWorker.ready;
+ if(!('periodicSync' in reg))return false;
+ try{on?await reg.periodicSync.register('bikecare-reminders',{minInterval:12*36e5}):await reg.periodicSync.unregister('bikecare-reminders');return true}catch(e){console.warn('[periodicSync]',e);return false}}
+function notifHtml(){const p=PREFS(),perm='Notification' in window?Notification.permission:'unsupported',ok=perm==='granted';
+ const st={granted:'✅ Permitidas',denied:'🚫 Bloqueadas: habilítalas en la configuración del sitio del navegador',default:'Aún no activadas',unsupported:'Este navegador no admite notificaciones'}[perm];
+ return `<div class="card"><b>🔔 Notificaciones y contador</b><p style="color:var(--mut);font-size:.9rem">Estado: ${st}</p>
+ ${perm==='default'?'<button id="nen">Activar notificaciones</button>':''}
+ <label class="chk"><input type="checkbox" id="nrem" ${p.reminders&&ok?'checked':''} ${ok?'':'disabled'}><span>Recordarme los puntos pendientes del checklist</span></label>
+ <label class="chk"><input type="checkbox" id="nbad" ${p.badge?'checked':''} ${'setAppBadge' in navigator?'':'disabled'}><span>Mostrar en el icono cuántos puntos del checklist faltan</span></label>
+ <button class="sec" id="ntest" ${ok?'':'disabled'}>Probar notificación</button> <span id="nmsg" style="color:var(--mut);font-size:.85rem"></span>
+ <p style="color:var(--mut);font-size:.8rem">Los recordatorios en segundo plano dependen del navegador (app instalada y Sincronización periódica); sin ella solo funcionan el contador y la prueba.</p>
+ <hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><b>📡 Avisos desde el servidor (push)</b><div id="pst" style="margin:6px 0;color:var(--mut);font-size:.9rem">Comprobando…</div><div id="pbt"></div></div>`}
+function notifBind(){pushPaint();const msg=t=>{const e=$('#nmsg');e&&(e.textContent=t)};
+ $('#nen')&&($('#nen').onclick=async()=>{try{await Notification.requestPermission()}catch{}config()});
+ $('#nrem')&&($('#nrem').onchange=async e=>{const on=e.target.checked;save('prefs',{...PREFS(),reminders:on});
+  const ok=await setReminders(on);msg(on&&!ok?'Este navegador no permite recordatorios en segundo plano.':on?'Recordatorio activado (el navegador decide cuándo ejecutarlo).':'Recordatorio desactivado.')});
+ $('#nbad')&&($('#nbad').onchange=e=>{save('prefs',{...PREFS(),badge:e.target.checked})});
+ $('#ntest')&&($('#ntest').onclick=async()=>{try{const r=await navigator.serviceWorker.ready;r.active.postMessage({type:'notify-test'});msg('Enviada.')}catch{msg('No se pudo enviar.')}})}
 
 // ---- Widget de Windows 11: copia un resumen (sin notas) a IndexedDB para que el service worker lo lea ----
-async function syncWidget(){try{
+async function syncWidget(){updateBadge();try{
  if(typeof WidgetStore==='undefined'||!('serviceWorker' in navigator))return;
  const l=[...S.hist].sort((a,b)=>b.date.localeCompare(a.date))[0];
  await WidgetStore.set('snapshot',{bikeType:S.bike.type||'',use:S.bike.use||'',
   last:l?{comp:l.comp,work:l.work,date:l.date}:null,histCount:S.hist.length,
-  chkDone:CHK.pre.filter((_,i)=>S.chk['pre'+i]).length,chkTotal:CHK.pre.length,updatedAt:Date.now()});
+  chkDone:CHK.pre.filter((_,i)=>S.chk['pre'+i]).length,chkTotal:CHK.pre.length,
+  pending:pendingCount(),prefs:PREFS(),updatedAt:Date.now()});
  const reg=await navigator.serviceWorker.ready;reg.active&&reg.active.postMessage({type:'widget-sync'})
 }catch{}}
-syncWidget();
+syncWidget();pushSync();

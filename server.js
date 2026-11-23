@@ -1,11 +1,11 @@
 // Servidor sin dependencias (Node >= 18): sirve la PWA y hace de proxy seguro hacia Groq.
-const http = require('http'), fs = require('fs'), path = require('path');
+const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 try { fs.readFileSync(path.join(__dirname, '.env'), 'utf8').split('\n').forEach(l => {
   const m = l.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
   if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
 }); } catch {}
 const PORT = process.env.PORT || 3000;
-const MODEL = () => process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const MODEL = () => process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 const PUB = path.join(__dirname, 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.json': 'application/json', '.png': 'image/png' };
 
@@ -21,6 +21,42 @@ SEGURIDAD:
 - Si el procedimiento es complejo, riesgoso o requiere herramientas especializadas (p. ej. purgado de frenos hidráulicos, servicio de suspensión, centrado avanzado, cuadro o horquilla dañados), recomienda acudir a un mecánico profesional.
 - Nunca afirmes que la bicicleta es segura para circular si el usuario reporta fallas en frenos, dirección, ruedas, cuadro u otros componentes críticos; indica no usarla hasta revisarla.
 - No inventes pares de apriete ni presiones exactas: remite a lo indicado en el componente, neumático o manual del fabricante.`;
+
+// ---- Web Push (ver push-service.js). Claves VAPID y token de administración: solo por variables de entorno ----
+const push = require('./push-service').createPushService({
+  file: process.env.PUSH_STORE || path.join(__dirname, 'data', 'push-subscriptions.json'),
+  webpush: require('web-push')
+});
+const PUSH_ERR = { INVALID: 400, FORBIDDEN: 403, FULL: 507, DISABLED: 503 };
+
+function readJson(req, res, cb) {
+  let body = '', dead = false;
+  req.on('data', c => { body += c; if (body.length > 10000 && !dead) { dead = true; send(res, 413, { error: 'Cuerpo demasiado grande.' }); req.destroy(); } });
+  req.on('end', async () => {
+    if (dead) return;
+    let data; try { data = JSON.parse(body || '{}'); } catch { return send(res, 400, { error: 'JSON inválido.' }); }
+    try { await cb(data); } catch (e) { send(res, PUSH_ERR[e.code] || 500, { error: e.code ? e.message : 'Error interno.' }); }
+  });
+}
+const isAdmin = req => {
+  const t = process.env.PUSH_ADMIN_TOKEN, h = (req.headers.authorization || '').replace(/^Bearer /, '');
+  if (!t || t.length < 16 || !h) return false;
+  const a = Buffer.from(t), b = Buffer.from(h);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
+function pushRoutes(req, res, url) {
+  if (url === '/api/push/key' && req.method === 'GET')
+    return send(res, 200, { enabled: push.enabled(), publicKey: push.enabled() ? push.publicKey() : '' }); // la clave PRIVADA nunca sale del servidor
+  if (url === '/api/push/subscribe' && req.method === 'POST')
+    return readJson(req, res, d => { if (!push.enabled()) return send(res, 503, { error: 'Web Push no está configurado en el servidor.' }); send(res, 200, push.subscribe(d.subscription)); });
+  if (url === '/api/push/unsubscribe' && req.method === 'POST')
+    return readJson(req, res, d => send(res, 200, { removed: push.unsubscribe(d) }));
+  if (url === '/api/push/send' && req.method === 'POST') {
+    if (!isAdmin(req)) return send(res, 401, { error: 'No autorizado.' });
+    return readJson(req, res, async d => send(res, 200, await push.send(d.payload, { id: d.id })));
+  }
+  return send(res, 404, { error: 'No encontrado.' });
+}
 
 function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); }
 
@@ -50,6 +86,7 @@ async function chat(req, res) {
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url === '/api/chat' && req.method === 'POST') return chat(req, res);
+  if (url.startsWith('/api/push/') && pushRoutes(req, res, url) !== false) return;
   if (url === '/api/health') return send(res, 200, { ok: true, ai: !!process.env.GROQ_API_KEY, model: MODEL() });
   let f = path.normalize(path.join(PUB, url === '/' ? 'index.html' : url));
   if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(PUB, 'index.html');
@@ -59,4 +96,4 @@ const server = http.createServer((req, res) => {
 
 // Solo escucha si se ejecuta con `node server.js`; al importarlo desde las pruebas no abre el puerto.
 if (require.main === module) server.listen(PORT, () => console.log(`BikeCare en http://localhost:${PORT}  (modelo: ${MODEL()})`));
-module.exports = { server };
+module.exports = { server, push };
