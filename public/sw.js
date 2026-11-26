@@ -1,12 +1,21 @@
 // BikeCare – Service Worker (offline + widget de Windows 11)
-const V = 'bikecare-v3';
-const FILES = ['/', '/index.html', '/styles.css', '/app.js', '/data.js', '/widget-store.js',
-  '/manifest.webmanifest', '/icon.svg', '/widgets/bike-summary.template.json', '/widgets/bike-summary.data.json'];
+const V = 'bikecare-v4';
+// Imprescindibles para funcionar sin conexión: si alguno falla, la instalación falla (y se reintenta).
+const FILES = ['/', '/index.html', '/styles.css', '/app.js', '/data.js', '/reminders.js', '/widget-store.js',
+  '/manifest.webmanifest', '/widgets/bike-summary.template.json', '/widgets/bike-summary.data.json'];
+// Opcionales (iconos): se guardan si existen, pero nunca bloquean la instalación del SW.
+const OPTIONAL = ['/icon.svg', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png'];
 
-importScripts('/widget-store.js', '/data.js'); // define WidgetStore y M (guías) en el scope del SW
+importScripts('/widget-store.js', '/data.js', '/reminders.js'); // WidgetStore, M (guías) y dueList en el scope del SW
 
-/* ---------- Caché / offline (igual que antes) ---------- */
-self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(FILES))); self.skipWaiting(); });
+/* ---------- Caché / offline ---------- */
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(V).then(async c => {
+    await c.addAll(FILES);
+    await Promise.all(OPTIONAL.map(u => c.add(u).catch(() => console.warn('[sw] no se pudo guardar', u))));
+  }));
+  self.skipWaiting();
+});
 self.addEventListener('activate', e => {
   e.waitUntil((async () => {
     for (const k of await caches.keys()) if (k !== V) await caches.delete(k);
@@ -17,7 +26,10 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const r = e.request;
   if (r.method !== 'GET' || new URL(r.url).pathname.startsWith('/api/')) return;
-  e.respondWith(fetch(r).then(res => { const cp = res.clone(); caches.open(V).then(c => c.put(r, cp)); return res; })
+  e.respondWith(fetch(r).then(res => { // solo se guardan respuestas correctas (nunca un 404 o un error)
+    if (res.ok) { const cp = res.clone(); caches.open(V).then(c => c.put(r, cp)); }
+    return res;
+  })
     .catch(() => caches.match(r).then(m => m || caches.match('/index.html'))));
 });
 
@@ -45,6 +57,9 @@ async function buildData(defaults) {
       ? `${cut(snap.last.comp, 22)}: ${cut(snap.last.work, 40)} (${ago(snap.last.date)})`
       : 'Sin registros de mantenimiento';
     d.chkDone = snap.chkDone; d.chkTotal = snap.chkTotal;
+    const due = dueNow(snap);
+    if (due.length) d.nextService = cut(`Toca: ${due.map(x => x.name).join(', ')}`, 60);
+    else if (snap.maint && snap.maint.hist && snap.maint.hist.length) d.nextService = 'Mantenimiento al día';
   }
   return d;
 }
@@ -108,14 +123,29 @@ self.addEventListener('message', e => { if (e.data && e.data.type === 'widget-sy
 // Solo se notifica con datos reales: el resumen (`snapshot`) que la página guarda en IndexedDB.
 const REMINDER_TAG = 'bikecare-reminders';
 const ROUTES = { '/': '#/', '/#/check': '#/check', '/#/hist': '#/hist', '/#/config': '#/config',
-  '/#/ai': '#/ai', '/#/diag': '#/diag', '/#/maint': '#/maint', '/#/bike': '#/bike', '/#/tools': '#/tools' };
-const routeFor = r => Object.prototype.hasOwnProperty.call(ROUTES, r) ? r : '/';   // lista blanca
+  '/#/ai': '#/ai', '/#/diag': '#/diag', '/#/maint': '#/maint', '/#/bike': '#/bike', '/#/tools': '#/tools' };const routeFor = r => Object.prototype.hasOwnProperty.call(ROUTES, r) ? r : '/';   // lista blanca
+
+// Componentes cuyo mantenimiento ya toca, recalculados HOY con los datos del resumen
+// (así el aviso por tiempo llega aunque la app lleve días cerrada). dueList viene de reminders.js.
+function dueNow(snap, today) {
+  if (!snap || !snap.maint || typeof dueList !== 'function') return [];
+  return dueList({ ...snap.maint, ...(today ? { today } : {}) }).filter(x => x.state === 'due');
+}
 
 // Devuelve el recordatorio a mostrar o null si no corresponde (sin preferencia o sin pendientes).
-function reminderFor(snap) {
+// `due`: componentes cuyo mantenimiento toca ([{ name, task }]); tienen prioridad sobre el checklist.
+function reminderFor(snap, due = []) {
   if (!snap || !snap.prefs || !snap.prefs.reminders) return null;
-  const n = Number(snap.pending) || 0;
-  if (n <= 0) return null;
+  const n = Number(snap.pending) || 0, d = due.length;
+  if (n <= 0 && d <= 0) return null;
+  if (d > 0) {
+    const names = due.slice(0, 3).map(x => x.name).join(', ') + (d > 3 ? ` y ${d - 3} más` : '');
+    return {
+      title: 'BikeCare: toca mantenimiento',
+      body: (d === 1 ? `${due[0].name}: ${due[0].task}` : `Toca revisar: ${names}`) + (n ? ` · ${n} en el checklist` : ''),
+      tag: 'bikecare-pending', route: '/#/maint', count: n + d, actionTitle: 'Ver mantenimiento'
+    };
+  }
   const pre = Math.max(0, (snap.chkTotal || 0) - (snap.chkDone || 0));
   return {
     title: 'BikeCare: revisión pendiente',
@@ -150,7 +180,7 @@ async function checkReminders() {
   const snap = await WidgetStore.get('snapshot');
   if (!snap) return;
   await applyBadge(snap);
-  const r = reminderFor(snap);
+  const r = reminderFor(snap, dueNow(snap));
   if (!r) return;
   const day = new Date().toDateString(), st = await WidgetStore.get('reminder-state');
   if (st && st.day === day) return;                                   // máximo un recordatorio al día
@@ -221,4 +251,4 @@ self.addEventListener('pushsubscriptionchange', e => e.waitUntil((async () => {
 })()));
 
 // Solo para las pruebas (en el navegador `module` no existe, así que esta línea no hace nada).
-if (typeof module !== 'undefined' && module.exports) module.exports = { ago, cut, reminderFor, routeFor, parsePush };
+if (typeof module !== 'undefined' && module.exports) module.exports = { ago, cut, reminderFor, routeFor, parsePush, dueNow };

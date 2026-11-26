@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "BikeCaree",
-  "short_name": "BikeCaree",
+  "name": "BikeCare",
+  "short_name": "BikeCare",
   "description": "Aprende mantenimiento de bicicletas con BikeAI",
   "start_url": "/",
   "scope": "/",
@@ -32,36 +32,12 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
-    }
-  ],
-  "screenshots": [
-    {
-      "src": "screenshots/inicio-wide.png",
-      "sizes": "1280x720",
-      "type": "image/png",
-      "form_factor": "wide",
-      "label": "Pantalla de inicio de BikeCaree"
     },
     {
-      "src": "screenshots/bikeai-wide.png",
-      "sizes": "1280x720",
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
       "type": "image/png",
-      "form_factor": "wide",
-      "label": "Chat con el asistente BikeAI"
-    },
-    {
-      "src": "screenshots/inicio-narrow.png",
-      "sizes": "720x1280",
-      "type": "image/png",
-      "form_factor": "narrow",
-      "label": "Inicio en el celular"
-    },
-    {
-      "src": "screenshots/bikeai-narrow.png",
-      "sizes": "720x1280",
-      "type": "image/png",
-      "form_factor": "narrow",
-      "label": "BikeAI en el celular"
+      "purpose": "maskable"
     }
   ],
   "shortcuts": [

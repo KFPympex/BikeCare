@@ -1,6 +1,6 @@
 // Pruebas unitarias de server.js: chat() (POST /api/chat), send() y MODEL() (vía /api/health).
 // Groq se simula con un mock de fetch: no hay llamadas reales ni se usa una API key real.
-const { server } = require('../server');
+const { server, chatLimiter, createRateLimiter } = require('../server');
 
 let base, realFetch;
 const post = (body, raw) => realFetch(base + '/api/chat', {
@@ -19,8 +19,8 @@ afterAll(done => {
   if (server.closeAllConnections) server.closeAllConnections(); // cierra conexiones keep-alive de fetch
   server.close(() => done());
 });
-beforeEach(() => { process.env.GROQ_API_KEY = 'test-key'; delete process.env.GROQ_MODEL; });
-afterEach(() => { global.fetch = realFetch; });
+beforeEach(() => { process.env.GROQ_API_KEY = 'test-key'; delete process.env.GROQ_MODEL; delete process.env.CHAT_RATE_LIMIT; chatLimiter.reset(); });
+afterEach(() => { global.fetch = realFetch; jest.restoreAllMocks(); });
 
 describe('POST /api/chat – validación', () => {
   test('responde 500 si falta GROQ_API_KEY y no llama a Groq', async () => {
@@ -39,11 +39,43 @@ describe('POST /api/chat – validación', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  test('un JSON malformado produce 500 con "Error interno"', async () => {
+  test('un JSON malformado produce 400 "JSON inválido."', async () => {
     mockGroq(groqOk());
     const r = await post(null, '{esto no es json');
-    expect(r.status).toBe(500);
-    expect((await r.json()).error).toMatch(/^Error interno/);
+    expect(r.status).toBe(400);
+    expect((await r.json()).error).toBe('JSON inválido.');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('un cuerpo de más de 50 000 caracteres responde 413 sin llamar a Groq', async () => {
+    mockGroq(groqOk());
+    const r = await post({ messages: [{ role: 'user', content: 'x'.repeat(60000) }] });
+    expect(r.status).toBe(413);
+    expect((await r.json()).error).toBe('Cuerpo demasiado grande.');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/chat – límite de peticiones', () => {
+  test('pasado el límite por minuto responde 429 con Retry-After y no llama a Groq', async () => {
+    process.env.CHAT_RATE_LIMIT = '2'; mockGroq(groqOk());
+    const ok1 = await post({ messages: [{ role: 'user', content: 'a' }] });
+    const ok2 = await post({ messages: [{ role: 'user', content: 'b' }] });
+    const r = await post({ messages: [{ role: 'user', content: 'c' }] });
+    expect([ok1.status, ok2.status]).toEqual([200, 200]);
+    expect(r.status).toBe(429);
+    expect(Number(r.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect((await r.json()).error).toMatch(/Demasiadas preguntas/);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('createRateLimiter: la ventana se reinicia al pasar el tiempo y cada IP cuenta aparte', () => {
+    process.env.CHAT_RATE_LIMIT = '1';
+    const l = createRateLimiter(1000);
+    expect(l.check('a', 0)).toBe(0);
+    expect(l.check('a', 100)).toBe(1);   // 900 ms restantes → 1 s
+    expect(l.check('b', 100)).toBe(0);
+    expect(l.check('a', 1000)).toBe(0);
   });
 });
 
@@ -138,11 +170,40 @@ describe('POST /api/chat – respuesta de Groq', () => {
     expect((await r.json()).error).toBe('Error al consultar Groq.');
   });
 
-  test('falla de red al llamar a Groq: 500 con "Error interno"', async () => {
+  test('falla de red al llamar a Groq: 500 genérico, sin exponer el detalle al cliente', async () => {
+    const log = jest.spyOn(console, 'error').mockImplementation(() => {});
     mockGroq(async () => { throw new Error('sin red'); });
     const r = await post({ messages: [{ role: 'user', content: 'hola' }] });
     expect(r.status).toBe(500);
-    expect((await r.json()).error).toBe('Error interno: sin red');
+    expect((await r.json()).error).toBe('Error interno.');
+    expect(log).toHaveBeenCalled(); // el detalle sí queda en el log del servidor
+  });
+});
+
+describe('Archivos estáticos', () => {
+  const get = p => realFetch(base + p);
+  test('sirve archivos existentes con cabeceras de seguridad', async () => {
+    const r = await get('/styles.css');
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toBe('text/css');
+    expect(r.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(r.headers.get('content-security-policy')).toMatch(/script-src 'self'/);
+  });
+  test('un archivo con extensión que no existe responde 404 (no index.html)', async () => {
+    const r = await get('/no-existe.png');
+    expect(r.status).toBe(404);
+  });
+  test('una ruta sin extensión devuelve la app (index.html)', async () => {
+    const r = await get('/cualquier-ruta');
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toMatch(/text\/html/);
+  });
+  test('no permite salir de public/ con ../ codificado', async () => {
+    const r = await get('/%2e%2e/server.js');
+    expect(await r.text()).not.toMatch(/createServer/);
+  });
+  test('sw.js se sirve con Cache-Control: no-cache', async () => {
+    expect((await get('/sw.js')).headers.get('cache-control')).toBe('no-cache');
   });
 });
 

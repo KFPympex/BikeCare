@@ -29,13 +29,24 @@ const push = require('./push-service').createPushService({
 });
 const PUSH_ERR = { INVALID: 400, FORBIDDEN: 403, FULL: 507, DISABLED: 503 };
 
-function readJson(req, res, cb) {
+function readJson(req, res, cb, limit = 10000) {
   let body = '', dead = false;
-  req.on('data', c => { body += c; if (body.length > 10000 && !dead) { dead = true; send(res, 413, { error: 'Cuerpo demasiado grande.' }); req.destroy(); } });
+  req.on('data', c => {
+    if (dead) return;
+    body += c;
+    if (body.length > limit) { // se responde 413 y se cierra la conexión al terminar (sin cortar la respuesta)
+      dead = true; body = '';
+      res.setHeader('Connection', 'close');
+      send(res, 413, { error: 'Cuerpo demasiado grande.' });
+    }
+  });
   req.on('end', async () => {
     if (dead) return;
     let data; try { data = JSON.parse(body || '{}'); } catch { return send(res, 400, { error: 'JSON inválido.' }); }
-    try { await cb(data); } catch (e) { send(res, PUSH_ERR[e.code] || 500, { error: e.code ? e.message : 'Error interno.' }); }
+    try { await cb(data); } catch (e) {
+      if (!e.code) console.error('[api]', e);           // el detalle queda en el log, no se envía al cliente
+      send(res, PUSH_ERR[e.code] || 500, { error: e.code ? e.message : 'Error interno.' });
+    }
   });
 }
 const isAdmin = req => {
@@ -60,40 +71,81 @@ function pushRoutes(req, res, url) {
 
 function send(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); }
 
-async function chat(req, res) {
-  let body = '';
-  req.on('data', c => { body += c; if (body.length > 50000) req.destroy(); });
-  req.on('end', async () => {
-    try {
-      if (!process.env.GROQ_API_KEY) return send(res, 500, { error: 'Falta GROQ_API_KEY en el servidor (.env).' });
-      const { messages, context } = JSON.parse(body || '{}');
-      if (!Array.isArray(messages) || !messages.length) return send(res, 400, { error: 'Mensajes inválidos.' });
-      const clean = messages.slice(-12).filter(m => ['user', 'assistant'].includes(m.role) && typeof m.content === 'string')
-        .map(m => ({ role: m.role, content: m.content.slice(0, 2000) }));
-      const ctx = context ? `\n\nDATOS DEL USUARIO (úsalos para personalizar):\n${JSON.stringify(context).slice(0, 2000)}` : '';
-      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
-        body: JSON.stringify({ model: MODEL(), temperature: 0.4, max_tokens: 900, messages: [{ role: 'system', content: SYSTEM + ctx }, ...clean] })
-      });
-      const data = await r.json();
-      if (!r.ok) return send(res, 502, { error: data.error?.message || 'Error al consultar Groq.' });
-      send(res, 200, { reply: data.choices?.[0]?.message?.content || '' });
-    } catch (e) { send(res, 500, { error: 'Error interno: ' + e.message }); }
-  });
+// ---- Límite de peticiones a /api/chat (en memoria, por IP). Protege la cuota de Groq ----
+// CHAT_RATE_LIMIT = peticiones por minuto (20 por defecto). Detrás de un proxy, TRUST_PROXY=1 usa X-Forwarded-For.
+function createRateLimiter(windowMs = 60000) {
+  const hits = new Map();
+  const max = () => Number(process.env.CHAT_RATE_LIMIT) || 20;
+  return {
+    // Devuelve 0 si la petición se permite, o los segundos que faltan para poder reintentar.
+    check(key, now = Date.now()) {
+      if (hits.size > 5000) for (const [k, v] of hits) if (now - v.start >= windowMs) hits.delete(k); // limpieza
+      let e = hits.get(key);
+      if (!e || now - e.start >= windowMs) hits.set(key, e = { start: now, n: 0 });
+      return ++e.n > max() ? Math.ceil((e.start + windowMs - now) / 1000) : 0;
+    },
+    reset: () => hits.clear()
+  };
 }
+const chatLimiter = createRateLimiter();
+const clientIp = req => (process.env.TRUST_PROXY === '1' && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim())
+  || req.socket.remoteAddress || '?';
+
+function chat(req, res) {
+  const wait = chatLimiter.check(clientIp(req));
+  if (wait) {
+    res.setHeader('Retry-After', String(wait));
+    return send(res, 429, { error: `Demasiadas preguntas seguidas. Intenta de nuevo en ${wait} s.` });
+  }
+  readJson(req, res, async ({ messages, context }) => {
+    if (!process.env.GROQ_API_KEY) return send(res, 500, { error: 'Falta GROQ_API_KEY en el servidor (.env).' });
+    if (!Array.isArray(messages) || !messages.length) return send(res, 400, { error: 'Mensajes inválidos.' });
+    const clean = messages.slice(-12).filter(m => m && ['user', 'assistant'].includes(m.role) && typeof m.content === 'string')
+      .map(m => ({ role: m.role, content: m.content.slice(0, 2000) }));
+    const ctx = context ? `\n\nDATOS DEL USUARIO (úsalos para personalizar):\n${JSON.stringify(context).slice(0, 2000)}` : '';
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      body: JSON.stringify({ model: MODEL(), temperature: 0.4, max_tokens: 900, messages: [{ role: 'system', content: SYSTEM + ctx }, ...clean] })
+    });
+    const data = await r.json();
+    if (!r.ok) return send(res, 502, { error: data.error?.message || 'Error al consultar Groq.' });
+    send(res, 200, { reply: data.choices?.[0]?.message?.content || '' });
+  }, 50000);
+}
+
+// Cabeceras de seguridad para los archivos estáticos (la app no usa scripts en línea; sí estilos en línea).
+const SEC_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin',
+  'X-Frame-Options': 'DENY',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+};
+
+function serveStatic(req, res, url) {
+  let f = path.normalize(path.join(PUB, url === '/' ? 'index.html' : decodeURIComponentSafe(url)));
+  const inside = f === PUB || f.startsWith(PUB + path.sep);
+  const exists = inside && fs.existsSync(f) && !fs.statSync(f).isDirectory();
+  if (!exists) {
+    // Un archivo con extensión que no existe (p. ej. /icon.png) es un 404 real; las rutas sin extensión
+    // devuelven la app (index.html) para que funcione la navegación de la PWA.
+    if (path.extname(url)) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...SEC_HEADERS }); return res.end('No encontrado'); }
+    f = path.join(PUB, 'index.html');
+  }
+  res.writeHead(200, { 'Content-Type': MIME[path.extname(f)] || 'application/octet-stream', ...SEC_HEADERS,
+    ...(path.basename(f) === 'sw.js' ? { 'Cache-Control': 'no-cache' } : {}) });   // el SW siempre se revisa
+  fs.createReadStream(f).pipe(res);
+}
+function decodeURIComponentSafe(s) { try { return decodeURIComponent(s); } catch { return s; } }
 
 const server = http.createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url === '/api/chat' && req.method === 'POST') return chat(req, res);
   if (url.startsWith('/api/push/') && pushRoutes(req, res, url) !== false) return;
   if (url === '/api/health') return send(res, 200, { ok: true, ai: !!process.env.GROQ_API_KEY, model: MODEL() });
-  let f = path.normalize(path.join(PUB, url === '/' ? 'index.html' : url));
-  if (!f.startsWith(PUB) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(PUB, 'index.html');
-  res.writeHead(200, { 'Content-Type': MIME[path.extname(f)] || 'application/octet-stream' });
-  fs.createReadStream(f).pipe(res);
+  serveStatic(req, res, url);
 });
 
 // Solo escucha si se ejecuta con `node server.js`; al importarlo desde las pruebas no abre el puerto.
 if (require.main === module) server.listen(PORT, () => console.log(`BikeCare en http://localhost:${PORT}  (modelo: ${MODEL()})`));
-module.exports = { server, push };
+module.exports = { server, push, chatLimiter, createRateLimiter };

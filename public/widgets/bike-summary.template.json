@@ -25,6 +25,12 @@
     },
     {
       "type": "TextBlock",
+      "text": "🔔 ${nextService}",
+      "wrap": true,
+      "spacing": "Small"
+    },
+    {
+      "type": "TextBlock",
       "text": "✅ Antes de salir: ${chkDone}/${chkTotal}",
       "wrap": true,
       "spacing": "Small"

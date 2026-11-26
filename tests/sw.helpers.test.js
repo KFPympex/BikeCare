@@ -68,6 +68,36 @@ describe('reminderFor(): recordatorio del checklist', () => {
   test('singular y sin pendientes previos a salir', () => {
     expect(reminderFor(snap({ pending: 1, chkDone: 5 })).body).toBe('Tienes 1 punto pendiente en tu checklist');
   });
+  test('mantenimiento que toca: tiene prioridad y abre la sección de mantenimiento', () => {
+    const r = reminderFor(snap({ pending: 2 }), [{ name: 'Cadena', task: 'Limpiar y lubricar la cadena' }]);
+    expect(r).toMatchObject({ title: 'BikeCare: toca mantenimiento', route: '/#/maint', count: 3 });
+    expect(r.body).toBe('Cadena: Limpiar y lubricar la cadena · 2 en el checklist');
+  });
+  test('varios componentes: lista hasta 3 y resume el resto; avisa aunque el checklist esté completo', () => {
+    const due = ['A', 'B', 'C', 'D', 'E'].map(name => ({ name, task: 't' }));
+    expect(reminderFor(snap({ pending: 0 }), due).body).toBe('Toca revisar: A, B, C y 2 más');
+  });
+  test('con recordatorios desactivados no avisa ni por mantenimiento', () => {
+    expect(reminderFor(snap({ prefs: { reminders: false } }), [{ name: 'A', task: 't' }])).toBeNull();
+  });
+});
+
+describe('dueNow(): recálculo en el service worker', () => {
+  const { dueNow } = require('../public/sw.js');
+  afterEach(() => { delete global.dueList; delete global.M; });
+  test('sin reminders.js cargado o sin datos de mantenimiento → []', () => {
+    expect(dueNow({ maint: { hist: [] } })).toEqual([]);
+    global.dueList = require('../public/reminders.js').dueList;
+    expect(dueNow({})).toEqual([]);
+    expect(dueNow(null)).toEqual([]);
+  });
+  test('recalcula con la fecha de hoy y devuelve solo lo que toca', () => {
+    global.dueList = require('../public/reminders.js').dueList;
+    global.M = [{ id: 'cadena', name: 'Cadena', icon: '⛓️' }, { id: 'frenos', name: 'Frenos', icon: '🛑' }];
+    const snap = { maint: { odo: 100, bike: {}, hist: [{ comp: 'Cadena', date: '2026-01-01', km: 100 }, { comp: 'Frenos', date: '2026-01-01', km: 100 }] } };
+    expect(dueNow(snap, '2026-01-10')).toEqual([]);                          // 9 días: aún no toca
+    expect(dueNow(snap, '2026-02-05').map(x => x.id)).toEqual(['cadena']);  // 35 días: la cadena (30) sí, frenos (60) no
+  });
 });
 
 describe('routeFor(): lista blanca de rutas de notificación', () => {

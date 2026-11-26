@@ -16,27 +16,54 @@ function buildNav(cur){$('#nav').innerHTML=NAV.map(n=>`<a href="#/${n[0]}" class
 function route(){const [p='',id]=location.hash.replace(/^#\/?/,'').split('/');buildNav(p);scrollTo(0,0);
  ({'':home,bike,maint:()=>id?maintDetail(id):maint(),ai,diag,check,tools,hist,config}[p]||home)()}
 
-function home(){app.innerHTML=`<div class="hero"><div class="big">🚲🔧🤖</div><h1>BikeCare</h1><p>Aprende a mantener tu bici, diagnostica fallas y pregunta a BikeAI paso a paso.</p><a class="btn" href="#/ai">Hablar con BikeAI</a></div>
+// ---- Recordatorios por km y tiempo (lógica en reminders.js) ----
+const odo=()=>{const n=Number(S.bike.odo);return S.bike.odo!==''&&S.bike.odo!=null&&Number.isFinite(n)?n:null};
+const DUE=()=>dueList({hist:S.hist,odo:odo(),bike:S.bike});
+const BADGE={due:['bad','🔴 Toca ya'],soon:['soon','🟡 Pronto'],ok:['okk','🟢 Al día'],unknown:['unk','⚪ Sin registro']};
+const dueTag=it=>`<span class="tag ${BADGE[it.state][0]}">${BADGE[it.state][1]}</span>`;
+function setOdo(km){km=Number(km);if(!Number.isFinite(km)||km<0)return false;S.bike.odo=Math.round(km);save('bike',S.bike);return true}
+// Registra el mantenimiento como hecho hoy con el kilometraje actual.
+function markDone(id){const it=DUE().find(x=>x.id===id);if(!it)return;
+ S.hist.push({id:Date.now(),date:todayStr(),comp:it.name,work:it.task,km:odo()??'',notes:''});save('hist',S.hist)}
+function dueRow(it){return `<div class="due"><div><b>${it.icon} ${esc(it.name)}</b> ${dueTag(it)}<br><small>${esc(it.task)} · ${esc(describeDue(it))}</small></div><button class="sec" data-done="${it.id}">✓ Hecho</button></div>`}
+function bindDone(after){document.querySelectorAll('[data-done]').forEach(b=>b.onclick=()=>{markDone(b.dataset.done);after()})}
+
+function home(){const list=DUE(),urgent=list.filter(x=>x.state==='due'||x.state==='soon'),unk=list.filter(x=>x.state==='unknown').length;
+ app.innerHTML=`<div class="hero"><div class="big">🚲🔧🤖</div><h1>BikeCare</h1><p>Aprende a mantener tu bici, diagnostica fallas y pregunta a BikeAI paso a paso.</p><a class="btn" href="#/ai">Hablar con BikeAI</a></div>
+ <h2>🔔 Próximo mantenimiento</h2><div class="card">
+  <div class="row" style="align-items:center"><label for="odo" style="white-space:nowrap">Odómetro (km)</label><input id="odo" type="number" min="0" inputmode="numeric" value="${odo()??''}" placeholder="Ej.: 1250"><button id="odos">Actualizar</button></div>
+  ${odo()===null?'<p class="mut">Escribe los km de tu bici para que los recordatorios también cuenten kilómetros.</p>':''}
+  ${urgent.length?urgent.slice(0,5).map(dueRow).join(''):`<p>✅ Todo al día.${unk?` <span class="mut">${unk} componentes sin registro.</span>`:''}</p>`}
+  <a href="#/maint" style="color:var(--g)">Ver plan completo →</a></div>
  <h2>Accesos rápidos</h2><div class="grid">${NAV.slice(1,8).map(n=>`<a class="card" href="#/${n[0]}"><div class="big">${n[1]}</div><b>${n[2]}</b></a>`).join('')}</div>
- ${S.bike.type?`<div class="card">Tu bici: <b>${esc(S.bike.type)}</b> · ${esc(S.bike.use||'')}. Registros: ${S.hist.length}</div>`:`<div class="card">Configura tu bici en <a href="#/bike" style="color:var(--g)">Mi bicicleta</a> para recomendaciones personalizadas.</div>`}`}
+ ${S.bike.type?`<div class="card">Tu bici: <b>${esc(S.bike.type)}</b> · ${esc(S.bike.use||'')}. Registros: ${S.hist.length}</div>`:`<div class="card">Configura tu bici en <a href="#/bike" style="color:var(--g)">Mi bicicleta</a> para recomendaciones personalizadas.</div>`}`;
+ $('#odos').onclick=()=>{if(setOdo($('#odo').value))home();else $('#odo').focus()};$('#odo').onkeydown=e=>{if(e.key==='Enter')$('#odos').click()};
+ bindDone(home)}
 
-function bike(){app.innerHTML=`<h1>🚲 Mi bicicleta</h1><div class="card">${FIELDS.map(f=>`<label>${f[1]}</label><select id="f-${f[0]}"><option value="">Selecciona…</option>${f[2].map(o=>`<option ${S.bike[f[0]]===o?'selected':''}>${o}</option>`).join('')}</select>`).join('')}<button id="sv">Guardar</button> <span id="ok" style="color:var(--g)"></span></div>`;
- $('#sv').onclick=()=>{FIELDS.forEach(f=>S.bike[f[0]]=$('#f-'+f[0]).value);save('bike',S.bike);$('#ok').textContent='Guardado ✓'}}
+function bike(){app.innerHTML=`<h1>🚲 Mi bicicleta</h1><div class="card">${FIELDS.map(f=>`<label>${f[1]}</label><select id="f-${f[0]}"><option value="">Selecciona…</option>${f[2].map(o=>`<option ${S.bike[f[0]]===o?'selected':''}>${o}</option>`).join('')}</select>`).join('')}<label>Kilometraje actual (odómetro, km)</label><input id="f-odo" type="number" min="0" inputmode="numeric" value="${odo()??''}"><button id="sv">Guardar</button> <span id="ok" style="color:var(--g)"></span></div>`;
+ $('#sv').onclick=()=>{FIELDS.forEach(f=>S.bike[f[0]]=$('#f-'+f[0]).value);const k=$('#f-odo').value;if(k==='')S.bike.odo='';else if(!setOdo(k))return $('#f-odo').focus();save('bike',S.bike);$('#ok').textContent='Guardado ✓'}}
 
-function maint(){app.innerHTML=`<h1>🔧 Mantenimiento</h1><div class="grid">${M.map(m=>`<a class="card" href="#/maint/${m.id}"><div class="big">${m.icon}</div><b>${m.name}</b><br><span class="tag">${m.dif}</span><span class="tag">${m.time}</span></a>`).join('')}</div>`}
-function maintDetail(id){const m=M.find(x=>x.id===id);if(!m)return maint();
+function maint(){const st=Object.fromEntries(DUE().map(x=>[x.id,x]));
+ app.innerHTML=`<h1>🔧 Mantenimiento</h1><p class="mut">El estado se calcula con tu historial y tu odómetro. Los intervalos son orientativos: con lluvia, barro o uso intensivo, acórtalos.</p><div class="grid">${M.map(m=>`<a class="card" href="#/maint/${m.id}"><div class="big">${m.icon}</div><b>${m.name}</b><br>${st[m.id]?dueTag(st[m.id]):''}<span class="tag">${m.dif}</span><span class="tag">${m.time}</span></a>`).join('')}</div>`}
+function maintDetail(id){const m=M.find(x=>x.id===id);if(!m)return maint();const it=DUE().find(x=>x.id===id);
  app.innerHTML=`<a href="#/maint" style="color:var(--g)">← Volver</a><h1>${m.icon} ${m.name}</h1><span class="tag">Dificultad: ${m.dif}</span><span class="tag">⏱ ${m.time}</span>
+ ${it?`<div class="card"><b>🔔 ${esc(it.task)}</b> ${dueTag(it)}<br><small class="mut">Cada ${[it.interval.km&&it.interval.km+' km',it.interval.days&&it.interval.days+' días'].filter(Boolean).join(' o ')} · ${esc(describeDue(it))}${it.last?` · Última vez: ${esc(it.last.date)}${it.last.km!==''&&it.last.km!=null?` (${esc(it.last.km)} km)`:''}`:''}</small><br><button class="sec" data-done="${it.id}" style="margin-top:8px">✓ Marcar como hecho hoy</button></div>`:''}
  <div class="card"><b>🛠️ Herramientas:</b> ${esc(m.tools)}<br><b>🧴 Materiales:</b> ${esc(m.mat)}</div>
  <h2>Pasos</h2><div class="card"><ol>${m.steps.map(s=>`<li>${esc(s)}</li>`).join('')}</ol></div>
  <div class="card">💡 <b>Consejo:</b> ${esc(m.tip)}<br>❗ <b>Error común:</b> ${esc(m.err)}</div><div class="warn">⚠️ ${esc(m.warn)}</div>
  <button id="ask">Preguntar a BikeAI sobre esto</button>`;
- $('#ask').onclick=()=>{S.pending=`Quiero hacer mantenimiento de: ${m.name}. Explícame paso a paso y dime qué errores evitar.`;location.hash='#/ai'}}
+ $('#ask').onclick=()=>{S.pending=`Quiero hacer mantenimiento de: ${m.name}. Explícame paso a paso y dime qué errores evitar.`;location.hash='#/ai'};
+ bindDone(()=>maintDetail(id))}
 
 const QUICK=[['🔧 Diagnosticar problema','Quiero diagnosticar un problema de mi bicicleta. Hazme las preguntas necesarias.'],['🚲 Mantenimiento','¿Qué mantenimiento necesita mi bicicleta según mi uso y mi historial?'],['🛠️ Herramientas','¿Qué herramientas básicas necesito para empezar a darle mantenimiento a mi bici?'],['⛓️ Cadena','¿Cada cuánto debo limpiar y lubricar la cadena y cómo sé si está estirada?'],['🛑 Frenos','¿Cómo sé si mis pastillas de freno están desgastadas?'],['⚙️ Cambios','Mi cambio trasero no sube correctamente al piñón grande, ¿qué reviso primero?']];
+// Datos que se envían a BikeAI: la bici, los 5 registros MÁS RECIENTES (sin notas) y lo que toca o tocará pronto.
+function aiContext(){return {bici:S.bike,
+ historial:[...S.hist].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5).map(({date,comp,work,km})=>({date,comp,work,km})),
+ pendiente:DUE().filter(x=>x.state==='due'||x.state==='soon').map(x=>`${x.name}: ${x.task} (${describeDue(x)})`)}}
 function msgsHtml(){return S.chat.map(m=>m.loading?`<div class="m a"><div class="dots"><span></span><span></span><span></span></div></div>`:`<div class="m ${m.role==='user'?'u':'a'}">${m.role==='user'?esc(m.content):md(m.content)}</div>`).join('')||`<div class="m a">¡Hola! Soy BikeAI. Cuéntame qué le pasa a tu bici o qué quieres aprender.</div>`}
 function paint(){const e=$('#msgs');if(e){e.innerHTML=msgsHtml();e.scrollTop=e.scrollHeight}}
 async function ask(text){if(!text.trim()||S.busy)return;S.busy=true;S.chat.push({role:'user',content:text});S.chat.push({loading:true});paint();
- try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:S.chat.filter(m=>!m.loading).map(({role,content})=>({role,content})),context:{bici:S.bike,historial:S.hist.slice(0,5)}})});
+ try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:S.chat.filter(m=>!m.loading).map(({role,content})=>({role,content})),context:aiContext()})});
   const d=await r.json();S.chat.pop();S.chat.push({role:'assistant',content:r.ok?d.reply:`⚠️ ${d.error||'Error'}`})}
  catch{S.chat.pop();S.chat.push({role:'assistant',content:'⚠️ No pude conectar con BikeAI (¿sin conexión?). Las guías de Mantenimiento siguen disponibles sin internet.'})}
  S.busy=false;paint()}
@@ -56,10 +83,14 @@ function check(){const sec=(t,k,arr)=>`<h2>${t}</h2><div class="card">${arr.map(
 function tools(){app.innerHTML=`<h1>🛠️ Herramientas</h1>${T.map(t=>`<div class="card"><b>${t.i} ${t.n}</b><br>${t.d}<br><span class="tag">Se usa en: ${t.u}</span></div>`).join('')}`}
 
 function hist(){const sorted=[...S.hist].sort((a,b)=>b.date.localeCompare(a.date));
- app.innerHTML=`<h1>📋 Historial</h1><div class="card"><label>Fecha</label><input type="date" id="hd" value="${new Date().toISOString().slice(0,10)}"><label>Componente</label><select id="hc">${M.map(m=>`<option>${m.name}</option>`).join('')}</select><label>Mantenimiento realizado</label><input id="hw"><label>Kilometraje (opcional)</label><input id="hk" type="number" min="0"><label>Notas</label><textarea id="hn" rows="2"></textarea><button id="ha">Agregar registro</button></div>
+ app.innerHTML=`<h1>📋 Historial</h1><div class="card"><label>Fecha</label><input type="date" id="hd" value="${todayStr()}" max="${todayStr()}"><label>Componente</label><select id="hc">${M.map(m=>`<option>${m.name}</option>`).join('')}</select><label>Mantenimiento realizado</label><input id="hw"><label>Kilometraje (opcional)</label><input id="hk" type="number" min="0" inputmode="numeric" value="${odo()??''}"><label>Notas</label><textarea id="hn" rows="2"></textarea><button id="ha">Agregar registro</button></div>
  <div class="tl">${sorted.map(h=>`<div class="card"><b>${esc(h.comp)}</b> · ${esc(h.date)}${h.km?` · ${esc(h.km)} km`:''}<br>${esc(h.work)}${h.notes?`<br><small style="color:var(--mut)">${esc(h.notes)}</small>`:''}<br><button class="sec" data-d="${h.id}" style="padding:4px 10px;margin-top:6px">Eliminar</button></div>`).join('')||'<p style="color:var(--mut)">Aún no hay registros.</p>'}</div>`;
- $('#ha').onclick=()=>{const w=$('#hw').value.trim();if(!w||!$('#hd').value)return;S.hist.push({id:Date.now(),date:$('#hd').value,comp:$('#hc').value,work:w,km:$('#hk').value,notes:$('#hn').value});save('hist',S.hist);hist()};
- document.querySelectorAll('[data-d]').forEach(b=>b.onclick=()=>{S.hist=S.hist.filter(h=>h.id!=b.dataset.d);save('hist',S.hist);hist()})}
+ $('#ha').onclick=()=>{const w=$('#hw').value.trim(),km=$('#hk').value;if(!w)return $('#hw').focus();if(!$('#hd').value)return;
+  S.hist.push({id:Date.now(),date:$('#hd').value,comp:$('#hc').value,work:w,km,notes:$('#hn').value});
+  if(km!==''&&(odo()===null||Number(km)>odo()))setOdo(km); // un registro con más km que el odómetro lo actualiza
+  save('hist',S.hist);hist()};
+ document.querySelectorAll('[data-d]').forEach(b=>b.onclick=()=>{const h=S.hist.find(x=>x.id==b.dataset.d);
+  if(!h||!confirm(`¿Eliminar el registro "${h.comp} · ${h.date}"?`))return;S.hist=S.hist.filter(x=>x!==h);save('hist',S.hist);hist()})}
 
 let deferred;addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferred=e;$('#inst')&&($('#inst').hidden=false)});
 async function config(){app.innerHTML=`<h1>⚙️ Ajustes</h1><div class="card"><b>Servidor BikeAI</b><div id="st">Comprobando…</div></div><div class="card"><button id="inst" ${deferred?'':'hidden'}>📲 Instalar BikeCare</button><p style="color:var(--mut);font-size:.9rem">El modelo de IA se cambia en el servidor con la variable GROQ_MODEL.</p><button class="sec" id="wipe">Borrar mis datos locales</button></div>${notifHtml()}`;notifBind();
@@ -124,7 +155,7 @@ function notifHtml(){const p=PREFS(),perm='Notification' in window?Notification.
  const st={granted:'✅ Permitidas',denied:'🚫 Bloqueadas: habilítalas en la configuración del sitio del navegador',default:'Aún no activadas',unsupported:'Este navegador no admite notificaciones'}[perm];
  return `<div class="card"><b>🔔 Notificaciones y contador</b><p style="color:var(--mut);font-size:.9rem">Estado: ${st}</p>
  ${perm==='default'?'<button id="nen">Activar notificaciones</button>':''}
- <label class="chk"><input type="checkbox" id="nrem" ${p.reminders&&ok?'checked':''} ${ok?'':'disabled'}><span>Recordarme los puntos pendientes del checklist</span></label>
+ <label class="chk"><input type="checkbox" id="nrem" ${p.reminders&&ok?'checked':''} ${ok?'':'disabled'}><span>Recordarme el mantenimiento que toca y los puntos pendientes del checklist</span></label>
  <label class="chk"><input type="checkbox" id="nbad" ${p.badge?'checked':''} ${'setAppBadge' in navigator?'':'disabled'}><span>Mostrar en el icono cuántos puntos del checklist faltan</span></label>
  <button class="sec" id="ntest" ${ok?'':'disabled'}>Probar notificación</button> <span id="nmsg" style="color:var(--mut);font-size:.85rem"></span>
  <p style="color:var(--mut);font-size:.8rem">Los recordatorios en segundo plano dependen del navegador (app instalada y Sincronización periódica); sin ella solo funcionan el contador y la prueba.</p>
@@ -143,7 +174,9 @@ async function syncWidget(){updateBadge();try{
  await WidgetStore.set('snapshot',{bikeType:S.bike.type||'',use:S.bike.use||'',
   last:l?{comp:l.comp,work:l.work,date:l.date}:null,histCount:S.hist.length,
   chkDone:CHK.pre.filter((_,i)=>S.chk['pre'+i]).length,chkTotal:CHK.pre.length,
-  pending:pendingCount(),prefs:PREFS(),updatedAt:Date.now()});
+  pending:pendingCount(),prefs:PREFS(),updatedAt:Date.now(),
+  // Para los recordatorios por km/tiempo el SW recalcula con estos datos mínimos (sin notas).
+  maint:{odo:odo(),bike:{drive:S.bike.drive||'',susp:S.bike.susp||''},hist:S.hist.map(({comp,date,km})=>({comp,date,km}))}});
  const reg=await navigator.serviceWorker.ready;reg.active&&reg.active.postMessage({type:'widget-sync'})
 }catch{}}
 syncWidget();pushSync();
